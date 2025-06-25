@@ -1,0 +1,45 @@
+{
+  "name": "baracota-node-db",
+  "author": {
+    "name": "M.S.B",
+    "email": "mosabaraka@gmail.com"
+  },
+  "license": "MIT",
+  "version": "2.0.0",
+  "description": "TypeScript ORM with multi-database support",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "eslint . --ext .ts",
+    "prepublishOnly": "npm run build && npm run test",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "typescript",
+    "orm",
+    "mysql",
+    "sqlite",
+    "database"
+  ],
+  "dependencies": {
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.0",
+    "class-validator-jsonschema": "^5.0.2",
+    "mysql2": "^3.0.0",
+    "reflect-metadata": "^0.1.13",
+    "sqlite": "^4.0.0",
+    "sqlite3": "^5.0.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/reflect-metadata": "^0.1.0",
+    "@types/sqlite3": "^3.1.0",
+    "@types/uuid": "^9.0.0",
+    "typescript": "^4.0.0"
+  }
+}
