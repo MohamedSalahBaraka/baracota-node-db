@@ -1,7 +1,8 @@
 "use strict";
 var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Rule = exports.Email = exports.Length = exports.Required = exports.Validator = void 0;
+exports.Rule = exports.Email = exports.Length = exports.Required = void 0;
+exports.Validator = Validator;
 const class_validator_1 = require("class-validator");
 /**
  * Decorator factory for validation rules
@@ -34,5 +35,4 @@ function Validator() {
         }),
     };
 }
-exports.Validator = Validator;
 _a = Validator(), exports.Required = _a.Required, exports.Length = _a.Length, exports.Email = _a.Email, exports.Rule = _a.Rule;

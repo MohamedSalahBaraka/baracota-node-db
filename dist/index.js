@@ -15,7 +15,10 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.transaction = exports.createModel = exports.initORM = exports.RelationType = exports.DatabaseFactory = exports.BaseModel = void 0;
+exports.RelationType = exports.DatabaseFactory = exports.BaseModel = void 0;
+exports.initORM = initORM;
+exports.createModel = createModel;
+exports.transaction = transaction;
 const BaseModel_1 = require("./BaseModel");
 const interfaces_1 = require("./types/interfaces");
 // Core exports
@@ -52,7 +55,6 @@ Object.defineProperty(exports, "RelationType", { enumerable: true, get: function
 async function initORM(config) {
     await BaseModel_1.BaseModel.initialize(config);
 }
-exports.initORM = initORM;
 // Helper functions for common operations
 /**
  * Creates a new model instance with the given table name
@@ -74,7 +76,6 @@ function createModel(tableName) {
         }
     };
 }
-exports.createModel = createModel;
 // Export transaction function directly
 /**
  * Executes operations within a database transaction
@@ -93,7 +94,6 @@ exports.createModel = createModel;
 async function transaction(callback) {
     return BaseModel_1.BaseModel.transaction(callback);
 }
-exports.transaction = transaction;
 // Export all type utilities
 __exportStar(require("./types/index"), exports);
 // Export all decorators

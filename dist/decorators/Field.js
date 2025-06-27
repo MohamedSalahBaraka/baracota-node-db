@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PrimaryKey = exports.Fields = void 0;
+exports.Fields = Fields;
+exports.PrimaryKey = PrimaryKey;
 /**
  * Decorator to define allowed fields for a model
  * @param fields Array of allowed field names
@@ -18,7 +19,6 @@ function Fields(fields) {
         constructor.prototype.allowedFields = fields;
     };
 }
-exports.Fields = Fields;
 /**
  * Decorator to mark a field as primary key
  * @param fieldName Name of the primary key field
@@ -36,4 +36,3 @@ function PrimaryKey(fieldName) {
         constructor.prototype.primaryKey = fieldName;
     };
 }
-exports.PrimaryKey = PrimaryKey;

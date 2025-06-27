@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Model = void 0;
+exports.Model = Model;
 /**
  * Decorator to define the table name for a model
  * @param tableName Name of the database table
@@ -18,4 +18,3 @@ function Model(tableName) {
         constructor.prototype.table = tableName;
     };
 }
-exports.Model = Model;

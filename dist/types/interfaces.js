@@ -7,4 +7,4 @@ var RelationType;
     RelationType["HAS_MANY"] = "hasMany";
     RelationType["BELONGS_TO"] = "belongsTo";
     RelationType["BELONGS_TO_MANY"] = "belongsToMany";
-})(RelationType = exports.RelationType || (exports.RelationType = {}));
+})(RelationType || (exports.RelationType = RelationType = {}));

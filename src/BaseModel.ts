@@ -1,12 +1,15 @@
 import {
   DatabaseConfig,
   DatabaseConnection,
+  EagerLoadConstraint,
   ModelConfig,
   OrderByCondition,
   Relation,
   RelationType,
   WhereCondition,
   WhereInCondition,
+  WhereValue,
+  WithOptions,
 } from "./types/interfaces";
 import { DatabaseFactory } from "./database/factory";
 
@@ -18,7 +21,7 @@ export class BaseModel {
   public allowedFields: string[] = [];
   protected whereConditions: WhereCondition[] = [];
   protected whereOrConditions: WhereCondition[] = [];
-  protected whereConditionsRaw: string[] = [];
+  protected whereConditionsRaw: { sql: string; params: string[] }[] = [{ sql: "", params: [] }];
   protected orderByConditions: OrderByCondition[] = [];
   protected _limit: number | null = null;
   protected offset: number | null = null;
@@ -27,6 +30,12 @@ export class BaseModel {
   protected whereGroupLevel: number = 0;
   protected whereGroupConditions: WhereCondition[] = [];
   public static relations: Record<string, Relation> = {};
+  protected _eagerLoad: {
+    relations: string[];
+    constraints: EagerLoadConstraint;
+    currentDepth: number;
+    maxDepth: number;
+  } = { constraints: {}, relations: [], currentDepth: 0, maxDepth: 3 };
   [key: string]: any;
   public static config: ModelConfig = {
     timestamps: true,
@@ -166,7 +175,274 @@ export class BaseModel {
     });
     return this;
   }
+  /**
+   * Eager load relationships
+   */
+  with(relations: string | string[], options?: WithOptions): this {
+    this._eagerLoad = {
+      relations: Array.isArray(relations) ? relations : [relations],
+      constraints: options?.constraints || {},
+      currentDepth: 0,
+      maxDepth: options?.maxDepth || 3,
+    };
+    return this;
+  }
+  protected async processEagerLoad<T = any>(results: T[]): Promise<T[]> {
+    if (!this._eagerLoad || results.length === 0) return results;
 
+    await this.loadRelations(results, this._eagerLoad);
+    return results;
+  }
+
+  // New recursive loadRelations method
+  private async loadRelations(
+    parents: any[],
+    eagerLoad: {
+      relations: string[];
+      constraints: EagerLoadConstraint;
+      currentDepth: number;
+      maxDepth: number;
+    },
+    currentRelationPath: string[] = [],
+    seen: Set<string> = new Set()
+  ): Promise<void> {
+    const relationKey = parents.map((p) => p[this.primaryKey]).join(",") + "|" + eagerLoad.relations.join(",");
+    if (seen.has(relationKey)) return;
+    seen.add(relationKey);
+
+    if (eagerLoad.currentDepth >= eagerLoad.maxDepth) return;
+
+    for (const relationName of eagerLoad.relations) {
+      const fullPath = [...currentRelationPath, relationName].join(".");
+      const relationParts = relationName.split(".");
+      const immediateRelation = relationParts[0];
+
+      // Validate relation exists
+      const relation = (this.constructor as typeof BaseModel).relations[immediateRelation];
+      if (!relation) {
+        throw new Error(`Relation ${immediateRelation} not defined on ${this.constructor.name}`);
+      }
+
+      // Process immediate relation
+      const relationModel = new relation.model();
+      const primaryKey = this.primaryKey;
+      // Apply constraints if any
+      if (eagerLoad.constraints[fullPath]) {
+        eagerLoad.constraints[fullPath](relationModel);
+      }
+
+      // Load relation based on type
+      switch (relation.type) {
+        case RelationType.HAS_ONE:
+          await this.loadHasOneRelation(parents, immediateRelation, relation, relationModel, primaryKey);
+          break;
+        case RelationType.HAS_MANY:
+          await this.loadHasManyRelation(parents, immediateRelation, relation, relationModel, primaryKey);
+          break;
+
+        case RelationType.BELONGS_TO:
+          await this.loadBelongsToRelation(parents, immediateRelation, relation, relationModel);
+          break;
+
+        case RelationType.BELONGS_TO_MANY:
+          await this.loadBelongsToManyRelation(parents, immediateRelation, relation, relationModel, primaryKey);
+          break;
+        // ... other relation types
+      }
+
+      // Process nested relations
+      if (relationParts.length > 1) {
+        const nestedRelations = [relationParts.slice(1).join(".")];
+        const nestedParents = parents.map((p) => p[immediateRelation]).filter(Boolean);
+
+        if (nestedParents.length > 0) {
+          await this.loadRelations(
+            nestedParents,
+            {
+              relations: nestedRelations,
+              constraints: eagerLoad.constraints,
+              currentDepth: eagerLoad.currentDepth + 1,
+              maxDepth: eagerLoad.maxDepth,
+            },
+            [...currentRelationPath, immediateRelation]
+          );
+        }
+      }
+    }
+  }
+
+  protected async loadHasOneRelation<T>(
+    results: T[],
+    relationName: string,
+    relation: Relation,
+    relationModel: BaseModel,
+    primaryKey: string
+  ): Promise<void> {
+    const foreignKey = relation.foreignKey || `${this.constructor.name.toLowerCase()}_id`;
+    const localKey = relation.localKey || primaryKey;
+
+    // Get all parent IDs
+    const parentIds = results.map((result: any) => result[localKey]);
+
+    if (parentIds.length === 0) return;
+
+    // Fetch all related models at once
+    const relatedModels = await relationModel.whereIn(foreignKey, parentIds).get();
+
+    // Map related models by foreign key
+    const relatedMap = new Map();
+    for (const model of relatedModels) {
+      relatedMap.set(model[foreignKey], model);
+    }
+
+    // Assign related models to parents
+    for (const result of results as any[]) {
+      result[relationName] = relatedMap.get(result[localKey]) || null;
+    }
+  }
+
+  protected async loadHasManyRelation<T>(
+    results: T[],
+    relationName: string,
+    relation: Relation,
+    relationModel: BaseModel,
+    primaryKey: string
+  ): Promise<void> {
+    const foreignKey = relation.foreignKey || `${this.constructor.name.toLowerCase()}_id`;
+    const localKey = relation.localKey || primaryKey;
+
+    // Get all parent IDs
+    const parentIds = results.map((result: any) => result[localKey]);
+
+    if (parentIds.length === 0) return;
+
+    // Fetch all related models at once
+    const relatedModels = await relationModel.whereIn(foreignKey, parentIds).get();
+
+    // Group related models by foreign key
+    const relatedMap = new Map();
+    for (const model of relatedModels) {
+      if (!relatedMap.has(model[foreignKey])) {
+        relatedMap.set(model[foreignKey], []);
+      }
+      relatedMap.get(model[foreignKey]).push(model);
+    }
+
+    // Assign related models to parents
+    for (const result of results as any[]) {
+      result[relationName] = relatedMap.get(result[localKey]) || [];
+    }
+  }
+
+  protected async loadBelongsToRelation<T>(results: T[], relationName: string, relation: Relation, relationModel: BaseModel): Promise<void> {
+    const foreignKey = relation.foreignKey || `${relation.model.name.toLowerCase()}_id`;
+    const ownerKey = relation.localKey || relationModel.primaryKey;
+
+    // Get all foreign keys
+    const foreignKeys = results
+      .map((result: any) => result[foreignKey])
+      .filter((value, index, self) => value !== undefined && value !== null && self.indexOf(value) === index);
+
+    if (foreignKeys.length === 0) return;
+
+    // Fetch all related models at once
+    const relatedModels = await relationModel.whereIn(ownerKey, foreignKeys).get();
+
+    // Map related models by owner key
+    const relatedMap = new Map();
+    for (const model of relatedModels) {
+      relatedMap.set(model[ownerKey], model);
+    }
+
+    // Assign related models to parents
+    for (const result of results as any[]) {
+      result[relationName] = relatedMap.get(result[foreignKey]) || null;
+    }
+  }
+
+  protected async loadBelongsToManyRelation<T>(
+    results: T[],
+    relationName: string,
+    relation: Relation,
+    relationModel: BaseModel,
+    primaryKey: string
+  ): Promise<void> {
+    const pivotTable = relation.pivotTable || `${this.constructor.name.toLowerCase()}_${relation.model.name.toLowerCase()}`;
+    const currentForeignKey = relation.foreignKey || `${this.constructor.name.toLowerCase()}_id`;
+    const relatedKey = relation.relatedKey || `${relation.model.name.toLowerCase()}_id`;
+
+    // Get all parent IDs
+    const parentIds = results.map((result: any) => result[primaryKey]);
+
+    if (parentIds.length === 0) return;
+
+    // Fetch all pivot records at once
+    const pivotQuery = `SELECT ${currentForeignKey}, ${relatedKey} FROM ${pivotTable} WHERE ${currentForeignKey} IN (${parentIds
+      .map(() => "?")
+      .join(",")})`;
+    const pivotRows = await this.executeQuery(pivotQuery, parentIds);
+
+    // Group related IDs by parent ID
+    const relatedIdsMap = new Map();
+    const allRelatedIds: (number | string)[] = [];
+
+    for (const row of pivotRows as any[]) {
+      if (!relatedIdsMap.has(row[currentForeignKey])) {
+        relatedIdsMap.set(row[currentForeignKey], []);
+      }
+      relatedIdsMap.get(row[currentForeignKey]).push(row[relatedKey]);
+      allRelatedIds.push(row[relatedKey]);
+    }
+
+    if (allRelatedIds.length === 0) {
+      // No relations found, set empty arrays for all parents
+      for (const result of results as any[]) {
+        result[relationName] = [];
+      }
+      return;
+    }
+
+    // Fetch all related models at once
+    const uniqueRelatedIds = [...new Set(allRelatedIds)];
+    const relatedModels = await relationModel.whereIn(relationModel.primaryKey, uniqueRelatedIds).get();
+
+    // Map related models by their primary key
+    const relatedModelsMap = new Map();
+    for (const model of relatedModels) {
+      relatedModelsMap.set(model[relationModel.primaryKey], model);
+    }
+
+    // Assign related models to parents
+    for (const result of results as any[]) {
+      const relatedIds = relatedIdsMap.get(result[primaryKey]) || [];
+      result[relationName] = relatedIds.map((id: number | string) => relatedModelsMap.get(id)).filter((model: any) => model !== undefined);
+    }
+  }
+
+  // Also need to modify the get() and first() methods to process eager loading:
+  async get<T = any>(options?: { chunkSize?: number }): Promise<T[]> {
+    const results = await this.executeWhereQuery<T>();
+
+    if (options?.chunkSize && results.length > options.chunkSize) {
+      const chunks = [];
+      for (let i = 0; i < results.length; i += options.chunkSize) {
+        const chunk = results.slice(i, i + options.chunkSize);
+        chunks.push(...(await this.processEagerLoad(chunk)));
+      }
+      return chunks;
+    }
+
+    return this.processEagerLoad(results);
+  }
+
+  async first<T = any>(): Promise<T | null> {
+    this.limit(1);
+    const results = await this.executeWhereQuery<T>();
+    if (results.length === 0) return null;
+
+    const processed = await this.processEagerLoad([results[0]]);
+    return processed[0];
+  }
   /**
    * Count all results matching the current query conditions
    */
@@ -176,9 +452,9 @@ export class BaseModel {
 
     const whereClauses = this.buildWhereClauses();
 
-    if (whereClauses.clauses) {
-      sql += ` WHERE ${whereClauses.clauses}`;
-      values.push(...whereClauses.values);
+    if (whereClauses) {
+      sql += ` WHERE ${whereClauses.sql}`;
+      values.push(...whereClauses.params);
     }
 
     const rows = await this.executeQuery(sql, values);
@@ -206,13 +482,81 @@ export class BaseModel {
   /**
    * WHERE clause (AND condition) with group support
    */
-  where(field: string, value: any, operator: string = "="): this {
-    if (value === null) return this.whereRaw(`${field} IS NULL`);
+  where<T extends this>(field: string, value: WhereValue): this {
+    if (typeof value === "object" && "operator" in value) {
+      return this.addWhereCondition(field, value.operator, value.value);
+    }
+    return this.addWhereCondition(field, "=", value);
+  }
+  // Specific where methods for common cases
+  whereNull(field: string): this {
+    return this.addWhereCondition(field, "IS NULL");
+  }
 
+  whereNotNull(field: string): this {
+    return this.addWhereCondition(field, "IS NOT NULL");
+  }
+
+  whereIn(field: string, values: any[]): this {
+    return this.addWhereCondition(field, "IN", values);
+  }
+
+  whereBetween(field: string, range: [any, any]): this {
+    return this.addWhereCondition(field, "BETWEEN", range);
+  }
+  whereGroup(callback: (query: this) => void): this {
+    this.whereGroupLevel++;
+    callback(this);
+    this.whereGroupLevel--;
+
+    // Move grouped conditions to main stack
+    if (this.whereGroupLevel === 0 && this.whereGroupConditions.length) {
+      this.whereConditions.push({
+        type: "group",
+        conditions: [...this.whereGroupConditions],
+        conjunction: "AND",
+      });
+      this.whereGroupConditions = [];
+    }
+    return this;
+  }
+
+  orWhereGroup(callback: (query: this) => void): this {
+    this.whereGroupLevel++;
+    callback(this);
+    this.whereGroupLevel--;
+
+    if (this.whereGroupLevel === 0 && this.whereGroupConditions.length) {
+      this.whereConditions.push({
+        type: "group",
+        conditions: [...this.whereGroupConditions],
+        conjunction: "OR",
+      });
+      this.whereGroupConditions = [];
+    }
+    return this;
+  }
+  whereExists(subquery: (query: this) => void): this {
+    const subqueryBuilder = new (this.constructor as any)();
+    subquery(subqueryBuilder);
+
+    const [sql, params] = subqueryBuilder.buildSelect();
+    return this.addWhereConditionRaw(`EXISTS (${sql})`, params);
+  }
+
+  whereNotExists(subquery: (query: this) => void): this {
+    const subqueryBuilder = new (this.constructor as any)();
+    subquery(subqueryBuilder);
+
+    const [sql, params] = subqueryBuilder.buildSelect();
+    return this.addWhereConditionRaw(`NOT EXISTS (${sql})`, params);
+  }
+  protected addWhereCondition(field: string, operator: string, value?: any, conjunction: "AND" | "OR" = "AND"): this {
     const condition: WhereCondition = {
       field,
-      value,
       operator,
+      value,
+      conjunction,
       group_level: this.whereGroupLevel,
     };
 
@@ -224,7 +568,108 @@ export class BaseModel {
 
     return this;
   }
+  whereRaw(sql: string, params: any[] = []): this {
+    const fieldRegex = /([a-zA-Z_][a-zA-Z0-9_]*)/g;
+    const fields = sql.match(fieldRegex) || [];
 
+    fields.forEach((field) => {
+      if (!this.allowedFields.includes(field) && field !== this.primaryKey) {
+        throw new Error(`Field ${field} is not allowed in raw where clause`);
+      }
+    });
+
+    // Also validate the SQL contains no dangerous keywords
+    const dangerousKeywords = ["DROP", "DELETE", "TRUNCATE", "INSERT", "UPDATE", "GRANT"];
+    if (dangerousKeywords.some((kw) => sql.toUpperCase().includes(kw))) {
+      throw new Error("Potentially dangerous SQL detected");
+    }
+
+    this.whereConditionsRaw.push({ sql, params });
+    return this;
+  }
+  protected buildWhereClauses(): { sql: string; params: any[] } {
+    const params: any[] = [];
+    const clauses: string[] = [];
+
+    // Process all conditions
+    for (const condition of this.whereConditions) {
+      if (condition.type === "group") {
+        const groupSql = this.buildConditionGroup(condition, params);
+        clauses.push(groupSql);
+      } else {
+        const conditionSql = this.buildSingleCondition(condition, params);
+        clauses.push(conditionSql);
+      }
+    }
+
+    // Add raw conditions
+    for (const raw of this.whereConditionsRaw) {
+      clauses.push(raw.sql);
+      params.push(...raw.params);
+    }
+
+    return {
+      sql: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
+      params,
+    };
+  }
+
+  private buildSingleCondition(condition: WhereCondition, params: any[]): string {
+    const { field, operator, value } = condition;
+
+    switch (operator) {
+      case "IN":
+      case "NOT IN":
+        params.push(...value);
+        return `${field} ${operator} (${value.map(() => "?").join(",")})`;
+
+      case "BETWEEN":
+      case "NOT BETWEEN":
+        params.push(...value);
+        return `${field} ${operator} ? AND ?`;
+
+      case "IS NULL":
+      case "IS NOT NULL":
+        return `${field} ${operator}`;
+
+      default:
+        params.push(value);
+        return `${field} ${operator} ?`;
+    }
+  }
+  whereJsonContains(field: string, value: any): this {
+    if (BaseModel.dbConfig.client === "mysql") {
+      return this.whereRaw(`JSON_CONTAINS(${field}, ?)`, [JSON.stringify(value)]);
+    } else {
+      // SQLite/SQL Server/PostgreSQL variants
+      return this.whereRaw(`${field} @> ?::jsonb`, [JSON.stringify(value)]);
+    }
+  }
+
+  whereJsonLength(field: string, operator: string, length: number): this {
+    if (BaseModel.dbConfig.client === "mysql") {
+      return this.whereRaw(`JSON_LENGTH(${field}) ${operator} ?`, [length]);
+    } else {
+      return this.whereRaw(`jsonb_array_length(${field}) ${operator} ?`, [length]);
+    }
+  }
+  whereDate(field: string, operator: string, value: Date | string): this {
+    const dateValue = value instanceof Date ? value.toISOString().split("T")[0] : value;
+    return this.whereRaw(`DATE(${field}) ${operator} ?`, [dateValue]);
+  }
+
+  whereTime(field: string, operator: string, value: Date | string): this {
+    const timeValue = value instanceof Date ? value.toISOString().split("T")[1].split(".")[0] : value;
+    return this.whereRaw(`TIME(${field}) ${operator} ?`, [timeValue]);
+  }
+  whereFullText(fields: string[], query: string, mode: "natural" | "boolean" = "natural"): this {
+    if (BaseModel.dbConfig.client === "mysql") {
+      return this.whereRaw(`MATCH(${fields.join(",")}) AGAINST(? ${mode === "boolean" ? "IN BOOLEAN MODE" : ""})`, [query]);
+    } else {
+      // PostgreSQL/SQLite variants
+      return this.whereRaw(`to_tsvector(${fields.join(" || ' ' || ")}) @@ ${mode === "boolean" ? "plain" : "to"}to_tsquery(?)`, [query]);
+    }
+  }
   /**
    * OR WHERE clause with group support
    */
@@ -269,9 +714,9 @@ export class BaseModel {
     const whereClauses = this.buildWhereClauses();
 
     // Combine WHERE clauses if any exist
-    if (whereClauses.clauses) {
-      sql += ` WHERE ${whereClauses.clauses}`;
-      values.push(...whereClauses.values);
+    if (whereClauses) {
+      sql += ` WHERE ${whereClauses.sql}`;
+      values.push(...whereClauses.params);
     }
 
     // ORDER BY clauses
@@ -293,60 +738,6 @@ export class BaseModel {
 
     const rows = await this.executeQuery(sql, values);
     return rows as T[];
-  }
-
-  /**
-   * Build WHERE clauses with grouped conditions
-   */
-  protected buildWhereClauses(): { clauses: string; values: any[] } {
-    const clauses: string[] = [];
-    const values: any[] = [];
-
-    // Process normal AND conditions
-    this.whereConditions.forEach((condition) => {
-      clauses.push(`${condition.field} ${condition.operator} ?`);
-      values.push(condition.value);
-    });
-
-    // Process WHERE IN conditions
-    this.whereInConditions.forEach((condition) => {
-      if (condition.values.length > 0) {
-        const placeholders = condition.values.map(() => "?").join(",");
-        clauses.push(`${condition.field} IN (${placeholders})`);
-        values.push(...condition.values);
-      }
-    });
-
-    // Process OR conditions
-    const orClauses: string[] = [];
-    const orValues: any[] = [];
-    this.whereOrConditions.forEach((condition) => {
-      orClauses.push(`${condition.field} ${condition.operator} ?`);
-      orValues.push(condition.value);
-    });
-    if (orClauses.length > 0) {
-      clauses.push(`(${orClauses.join(" OR ")})`);
-      values.push(...orValues);
-    }
-
-    // Process grouped conditions
-    if (this.whereGroupConditions.length > 0) {
-      const groupedClauses = this.processGroupedConditions();
-      if (groupedClauses.clauses) {
-        clauses.push(groupedClauses.clauses);
-        values.push(...groupedClauses.values);
-      }
-    }
-
-    // Raw WHERE conditions
-    this.whereConditionsRaw.forEach((raw) => {
-      clauses.push(raw);
-    });
-
-    return {
-      clauses: clauses.join(" AND "),
-      values,
-    };
   }
 
   /**
@@ -425,28 +816,6 @@ export class BaseModel {
 
     const rows = await this.executeQuery(sql, values);
     return rows[0]?.total ? parseInt(rows[0].total) : 0;
-  }
-
-  whereRaw(whereQuery: string): this {
-    this.whereConditionsRaw.push(whereQuery);
-    return this;
-  }
-
-  whereIn(field: string, values: any[]): this {
-    this.whereInConditions.push({
-      field,
-      values,
-    });
-    return this;
-  }
-
-  async get<T = any>(): Promise<T[]> {
-    return this.executeWhereQuery<T>();
-  }
-
-  async first<T = any>(): Promise<T | null> {
-    const results = await this.executeWhereQuery<T>();
-    return results[0] || null;
   }
 
   selectSum(field: string, alias: string | null = null): this {
@@ -641,17 +1010,6 @@ export class BaseModel {
     if (config.updatedAt) {
       data[config.updatedAt] = now;
     }
-  }
-
-  /**
-   * QUERY ENHANCEMENTS
-   */
-  whereNotNull(field: string): this {
-    return this.whereRaw(`${field} IS NOT NULL`);
-  }
-
-  whereNull(field: string): this {
-    return this.whereRaw(`${field} IS NULL`);
   }
 
   async paginate<T = any>(

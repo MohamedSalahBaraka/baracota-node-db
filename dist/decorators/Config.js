@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ModelConfig = void 0;
+exports.ModelConfig = ModelConfig;
 /**
  * Decorator to configure model options
  * @param config Model configuration
@@ -24,4 +24,3 @@ function ModelConfig(config) {
         };
     };
 }
-exports.ModelConfig = ModelConfig;

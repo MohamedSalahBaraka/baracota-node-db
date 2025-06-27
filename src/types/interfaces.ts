@@ -33,7 +33,20 @@ export enum RelationType {
   BELONGS_TO = "belongsTo",
   BELONGS_TO_MANY = "belongsToMany",
 }
+export interface EagerLoadConstraint {
+  [key: string]: (query: BaseModel) => void;
+}
 
+export interface WithOptions {
+  constraints?: EagerLoadConstraint;
+  maxDepth?: number;
+}
+export interface WhereOperator {
+  operator: "=" | "!=" | ">" | "<" | ">=" | "<=" | "LIKE" | "NOT LIKE" | "IN" | "NOT IN" | "BETWEEN" | "NOT BETWEEN" | "IS NULL" | "IS NOT NULL";
+  value?: any | [any, any]; // For BETWEEN/NOT BETWEEN
+}
+
+export type WhereValue = WhereOperator | any;
 export interface Relation {
   type: RelationType;
   model: typeof BaseModel;
@@ -56,9 +69,12 @@ export interface QueryOptions {
   with?: string[];
 }
 export interface WhereCondition {
-  field: string;
-  value: any;
-  operator: string;
+  field?: string;
+  value?: any;
+  type?: string;
+  conditions?: WhereCondition[];
+  conjunction?: "AND" | "OR";
+  operator?: string;
   group_level?: number;
 }
 

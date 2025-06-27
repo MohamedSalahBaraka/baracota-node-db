@@ -1,6 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AfterDelete = exports.BeforeDelete = exports.AfterUpdate = exports.BeforeUpdate = exports.AfterCreate = exports.BeforeCreate = void 0;
+exports.BeforeCreate = BeforeCreate;
+exports.AfterCreate = AfterCreate;
+exports.BeforeUpdate = BeforeUpdate;
+exports.AfterUpdate = AfterUpdate;
+exports.BeforeDelete = BeforeDelete;
+exports.AfterDelete = AfterDelete;
 /**
  * Decorator to register a before create hook
  */
@@ -12,7 +17,6 @@ function BeforeCreate() {
         };
     };
 }
-exports.BeforeCreate = BeforeCreate;
 /**
  * Decorator to register an after create hook
  */
@@ -24,21 +28,16 @@ function AfterCreate() {
         };
     };
 }
-exports.AfterCreate = AfterCreate;
 // Similar decorators for update/delete hooks
 function BeforeUpdate() {
     /* ... */
 }
-exports.BeforeUpdate = BeforeUpdate;
 function AfterUpdate() {
     /* ... */
 }
-exports.AfterUpdate = AfterUpdate;
 function BeforeDelete() {
     /* ... */
 }
-exports.BeforeDelete = BeforeDelete;
 function AfterDelete() {
     /* ... */
 }
-exports.AfterDelete = AfterDelete;

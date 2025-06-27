@@ -70,8 +70,11 @@ export const BelongsTo = createRelationDecorator(RelationType.BELONGS_TO);
  *
  * @example
  * ```typescript
- * @BelongsToMany({ pivotTable: 'user_roles' })
- * roles: Role[];
+ * class User extends BaseModel {
+ *   @BelongsToMany({ pivotTable: 'user_roles' })
+ *   roles: Role[];
+ * }
  * ```
  */
+
 export const BelongsToMany = createRelationDecorator(RelationType.BELONGS_TO_MANY);
