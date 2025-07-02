@@ -41,8 +41,10 @@ export declare const BelongsTo: (options?: Omit<Relation, "type" | "model">) => 
  *
  * @example
  * ```typescript
- * @BelongsToMany({ pivotTable: 'user_roles' })
- * roles: Role[];
+ * class User extends BaseModel {
+ *   @BelongsToMany({ pivotTable: 'user_roles' })
+ *   roles: Role[];
+ * }
  * ```
  */
 export declare const BelongsToMany: (options?: Omit<Relation, "type" | "model">) => (target: any, propertyKey: string) => void;

@@ -10,7 +10,9 @@ export class DatabaseFactory {
       case "mysql":
         return new MysqlAdapter(config.connection as MysqlConnectionConfig);
       case "sqlite":
-        return new SqliteAdapter(config.connection as SqliteConnectionConfig);
+        const adapter = new SqliteAdapter(config.connection as SqliteConnectionConfig);
+        await adapter.connect(); // 👈 make sure connection is opened
+        return adapter;
       default:
         throw new Error(`Unsupported database client: ${config.client}`);
     }
@@ -81,11 +83,14 @@ class SqliteAdapter implements DatabaseConnection {
   }
 
   async query<T = any>(sql: string, params?: any[]): Promise<[T[], any]> {
+    console.log(`Executing SQL: "${sql}" with params: ${params ? JSON.stringify(params) : "[]"}`);
+
     const result = (await this.db.all<T>(sql, params)) as T[];
     return [result, {}];
   }
 
   async execute(sql: string, params?: any[]): Promise<any> {
+    console.log(`Executing SQL: "${sql}" with params: ${params ? JSON.stringify(params) : "[]"}`);
     return this.db.run(sql, params);
   }
 

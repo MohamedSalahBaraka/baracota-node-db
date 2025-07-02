@@ -1,4 +1,4 @@
-import { DatabaseConfig, DatabaseConnection, ModelConfig, OrderByCondition, Relation, WhereCondition, WhereInCondition } from "./types/interfaces";
+import { DatabaseConfig, DatabaseConnection, EagerLoadConstraint, ModelConfig, OrderByCondition, Relation, WhereCondition, WhereInCondition, WithOptions } from "./types/interfaces";
 export declare class BaseModel {
     protected static dbConfig: DatabaseConfig;
     protected static connection: DatabaseConnection;
@@ -7,7 +7,10 @@ export declare class BaseModel {
     allowedFields: string[];
     protected whereConditions: WhereCondition[];
     protected whereOrConditions: WhereCondition[];
-    protected whereConditionsRaw: string[];
+    protected whereConditionsRaw: {
+        sql: string;
+        params: string[];
+    }[];
     protected orderByConditions: OrderByCondition[];
     protected _limit: number | null;
     protected offset: number | null;
@@ -16,9 +19,14 @@ export declare class BaseModel {
     protected whereGroupLevel: number;
     protected whereGroupConditions: WhereCondition[];
     static relations: Record<string, Relation>;
+    protected _eagerLoad: {
+        relations: string[];
+        constraints: EagerLoadConstraint;
+        currentDepth: number;
+        maxDepth: number;
+    };
     [key: string]: any;
     static config: ModelConfig;
-    constructor(...args: any[]);
     /**
      * Initialize database connection
      */
@@ -53,6 +61,20 @@ export declare class BaseModel {
      */
     orderBy(field: string, direction?: "ASC" | "DESC"): this;
     /**
+     * Eager load relationships
+     */
+    with(relations: string | string[], options?: WithOptions): this;
+    protected processEagerLoad<T = any>(results: T[]): Promise<T[]>;
+    private loadRelations;
+    protected loadHasOneRelation<T>(results: T[], relationName: string, relation: Relation, relationModel: BaseModel, primaryKey: string): Promise<void>;
+    protected loadHasManyRelation<T>(results: T[], relationName: string, relation: Relation, relationModel: BaseModel, primaryKey: string): Promise<void>;
+    protected loadBelongsToRelation<T>(results: T[], relationName: string, relation: Relation, relationModel: BaseModel): Promise<void>;
+    protected loadBelongsToManyRelation<T>(results: T[], relationName: string, relation: Relation, relationModel: BaseModel, primaryKey: string): Promise<void>;
+    get<T = any>(options?: {
+        chunkSize?: number;
+    }): Promise<T[]>;
+    first<T = any>(): Promise<T | null>;
+    /**
      * Count all results matching the current query conditions
      */
     countAllResults(): Promise<number>;
@@ -67,7 +89,27 @@ export declare class BaseModel {
     /**
      * WHERE clause (AND condition) with group support
      */
-    where(field: string, value: any, operator?: string): this;
+    where(field: string, ...args: any[]): this;
+    whereNull(field: string): this;
+    whereNotNull(field: string): this;
+    whereIn(field: string, values: any[]): this;
+    whereBetween(field: string, range: [any, any]): this;
+    whereGroup(callback: (query: this) => void): this;
+    orWhereGroup(callback: (query: this) => void): this;
+    whereExists(subquery: (query: this) => void): this;
+    whereNotExists(subquery: (query: this) => void): this;
+    protected addWhereCondition(field: string, operator: string, value?: any, conjunction?: "AND" | "OR"): this;
+    whereRaw(sql: string, params?: any[]): this;
+    protected buildWhereClauses(): {
+        sql: string | undefined;
+        params: any[];
+    };
+    private buildSingleCondition;
+    whereJsonContains(field: string, value: any): this;
+    whereJsonLength(field: string, operator: string, length: number): this;
+    whereDate(field: string, operator: string, value: Date | string): this;
+    whereTime(field: string, operator: string, value: Date | string): this;
+    whereFullText(fields: string[], query: string, mode?: "natural" | "boolean"): this;
     /**
      * OR WHERE clause with group support
      */
@@ -76,13 +118,6 @@ export declare class BaseModel {
      * Execute query with WHERE conditions
      */
     protected executeWhereQuery<T = any>(): Promise<T[]>;
-    /**
-     * Build WHERE clauses with grouped conditions
-     */
-    protected buildWhereClauses(): {
-        clauses: string;
-        values: any[];
-    };
     /**
      * Process grouped conditions
      */
@@ -96,10 +131,6 @@ export declare class BaseModel {
     resetQuery(): void;
     limit(limit: number, offset?: number): this;
     count(conditions?: Record<string, any>): Promise<number>;
-    whereRaw(whereQuery: string): this;
-    whereIn(field: string, values: any[]): this;
-    get<T = any>(): Promise<T[]>;
-    first<T = any>(): Promise<T | null>;
     selectSum(field: string, alias?: string | null): this;
     /**
      * TRANSACTION SUPPORT
@@ -108,10 +139,31 @@ export declare class BaseModel {
     /**
      * RELATIONSHIPS
      */
-    static hasOne(model: typeof BaseModel, foreignKey?: string, localKey?: string): void;
-    static hasMany(model: typeof BaseModel, foreignKey?: string, localKey?: string): void;
-    static belongsTo(model: typeof BaseModel, foreignKey?: string, ownerKey?: string): void;
-    static belongsToMany(model: typeof BaseModel, pivotTable: string, foreignKey?: string, relatedKey?: string): void;
+    static hasOne({ model, foreignKey, localKey, as }: {
+        model: typeof BaseModel;
+        foreignKey?: string;
+        localKey?: string;
+        as?: string;
+    }): void;
+    static hasMany({ model, foreignKey, localKey, as }: {
+        model: typeof BaseModel;
+        foreignKey?: string;
+        localKey?: string;
+        as?: string;
+    }): void;
+    static belongsTo({ model, foreignKey, ownerKey, as }: {
+        model: typeof BaseModel;
+        foreignKey?: string;
+        ownerKey?: string;
+        as?: string;
+    }): void;
+    static belongsToMany({ model, foreignKey, pivotTable, relatedKey, as, }: {
+        model: typeof BaseModel;
+        pivotTable: string;
+        foreignKey?: string;
+        relatedKey?: string;
+        as?: string;
+    }): void;
     load<T extends BaseModel>(this: T, relations: string[]): Promise<T>;
     protected loadRelation(relationName: string): Promise<void>;
     /**
@@ -126,11 +178,6 @@ export declare class BaseModel {
      * TIMESTAMPS
      */
     protected setTimestamps(data: Record<string, any>, isUpdate?: boolean): Promise<void>;
-    /**
-     * QUERY ENHANCEMENTS
-     */
-    whereNotNull(field: string): this;
-    whereNull(field: string): this;
     paginate<T = any>(perPage: number, currentPage?: number): Promise<{
         data: T[];
         total: number;
@@ -148,7 +195,9 @@ export declare class BaseModel {
     protected afterUpdate(data: Record<string, any>): Promise<void>;
     protected beforeDelete(): Promise<void>;
     protected afterDelete(): Promise<void>;
-    update(id: number | string, data: Record<string, any>, column?: string | null): Promise<boolean>;
-    delete(id: number | string, column?: string | null): Promise<boolean>;
+    update(data: Record<string, any>): Promise<boolean>;
+    update(id: string | number | Array<string | number>, data: Record<string, any>, column?: string | null): Promise<boolean>;
+    delete(): Promise<boolean>;
+    delete(id: string | number | Array<string | number>, column?: string | null): Promise<boolean>;
     protected filterAllowedFields(data: Record<string, any>): Record<string, any>;
 }

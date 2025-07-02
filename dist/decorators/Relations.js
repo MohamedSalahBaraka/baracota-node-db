@@ -64,8 +64,10 @@ exports.BelongsTo = createRelationDecorator(interfaces_1.RelationType.BELONGS_TO
  *
  * @example
  * ```typescript
- * @BelongsToMany({ pivotTable: 'user_roles' })
- * roles: Role[];
+ * class User extends BaseModel {
+ *   @BelongsToMany({ pivotTable: 'user_roles' })
+ *   roles: Role[];
+ * }
  * ```
  */
 exports.BelongsToMany = createRelationDecorator(interfaces_1.RelationType.BELONGS_TO_MANY);

@@ -21,7 +21,7 @@ export class BaseModel {
   public allowedFields: string[] = [];
   protected whereConditions: WhereCondition[] = [];
   protected whereOrConditions: WhereCondition[] = [];
-  protected whereConditionsRaw: { sql: string; params: string[] }[] = [{ sql: "", params: [] }];
+  protected whereConditionsRaw: { sql: string; params: string[] }[] = [];
   protected orderByConditions: OrderByCondition[] = [];
   protected _limit: number | null = null;
   protected offset: number | null = null;
@@ -44,23 +44,6 @@ export class BaseModel {
     updatedAt: "updated_at",
     deletedAt: "deleted_at",
   };
-  constructor(...args: any[]) {
-    if (!this.table) {
-      throw new Error("Table name must be defined in the model.");
-    }
-    if (!this.primaryKey) {
-      throw new Error("Primary key must be defined in the model.");
-    }
-    if (!this.allowedFields.length) {
-      throw new Error("Allowed fields must be defined in the model.");
-    }
-    if (!BaseModel.dbConfig) {
-      throw new Error("Database configuration is not initialized. Call BaseModel.initialize(config) first.");
-    }
-    if (!BaseModel.connection) {
-      throw new Error("Database connection is not initialized. Call BaseModel.initialize(config) first.");
-    }
-  }
   /**
    * Initialize database connection
    */
@@ -129,9 +112,18 @@ export class BaseModel {
 
   // Update all methods to use executeQuery/executeUpdate instead of direct pdo calls
   async find<T = any>(id: number | string, key: string = this.primaryKey): Promise<T | null> {
-    const sql = `SELECT * FROM ${this.table} WHERE ${key} = ?`;
+    const whereParts = [` ${key} = ?`];
+    const whereValues = [id];
+    const queryBuilderWhere = this.buildWhereClauses();
+    if (queryBuilderWhere.sql) {
+      whereParts.push(queryBuilderWhere.sql);
+      whereValues.push(...queryBuilderWhere.params);
+    }
+    const whereClause = `WHERE ${whereParts.join(" AND ")}`;
+    const sql = `SELECT * FROM ${this.table} ${whereClause} LIMIT 1`;
     const rows = await this.executeQuery<T>(sql, [id]);
-    return rows[0] || null;
+    const result = await this.processEagerLoad(rows);
+    return result[0] || null;
   }
 
   async insert(data: Record<string, any>): Promise<number> {
@@ -253,7 +245,16 @@ export class BaseModel {
       // Process nested relations
       if (relationParts.length > 1) {
         const nestedRelations = [relationParts.slice(1).join(".")];
-        const nestedParents = parents.map((p) => p[immediateRelation]).filter(Boolean);
+        const nestedParents = parents
+          .map((p) => p[immediateRelation])
+          .reduce<any[]>((acc, val) => {
+            if (Array.isArray(val)) {
+              acc.push(...val);
+            } else if (val) {
+              acc.push(val);
+            }
+            return acc;
+          }, []);
 
         if (nestedParents.length > 0) {
           await this.loadRelations(
@@ -452,7 +453,7 @@ export class BaseModel {
 
     const whereClauses = this.buildWhereClauses();
 
-    if (whereClauses) {
+    if (whereClauses.sql) {
       sql += ` WHERE ${whereClauses.sql}`;
       values.push(...whereClauses.params);
     }
@@ -482,12 +483,21 @@ export class BaseModel {
   /**
    * WHERE clause (AND condition) with group support
    */
-  where<T extends this>(field: string, value: WhereValue): this {
-    if (typeof value === "object" && "operator" in value) {
-      return this.addWhereCondition(field, value.operator, value.value);
+  where(field: string, ...args: any[]): this {
+    if (args.length === 1) {
+      // where("col", value)
+      const value = args[0];
+      return this.addWhereCondition(field, "=", value);
+    } else if (args.length === 2) {
+      // where("col", operator, value)
+      const operator = args[0];
+      const value = args[1];
+      return this.addWhereCondition(field, operator, value);
+    } else {
+      throw new Error("Invalid where syntax. Use where(field, value) or where(field, operator, value)");
     }
-    return this.addWhereCondition(field, "=", value);
   }
+
   // Specific where methods for common cases
   whereNull(field: string): this {
     return this.addWhereCondition(field, "IS NULL");
@@ -587,16 +597,21 @@ export class BaseModel {
     this.whereConditionsRaw.push({ sql, params });
     return this;
   }
-  protected buildWhereClauses(): { sql: string; params: any[] } {
+  protected buildWhereClauses(): { sql: string | undefined; params: any[] } {
     const params: any[] = [];
     const clauses: string[] = [];
+    console.log(`clauses: ${JSON.stringify(clauses)}`);
 
     // Process all conditions
     for (const condition of this.whereConditions) {
       if (condition.type === "group") {
         const groupSql = this.buildConditionGroup(condition, params);
         clauses.push(groupSql);
+        console.log(`Adding group condition: ${groupSql}`);
       } else {
+        // Handle single conditions
+        console.log(`Adding single condition: ${JSON.stringify(condition)}`);
+
         const conditionSql = this.buildSingleCondition(condition, params);
         clauses.push(conditionSql);
       }
@@ -604,12 +619,15 @@ export class BaseModel {
 
     // Add raw conditions
     for (const raw of this.whereConditionsRaw) {
+      console.log(`Adding raw condition: ${JSON.stringify(raw)}`);
+
       clauses.push(raw.sql);
       params.push(...raw.params);
     }
+    console.log(`Building WHERE clauses: ${JSON.stringify(clauses)} `, clauses.length);
 
     return {
-      sql: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
+      sql: clauses.length > 0 ? ` ${clauses.join(" AND ")}` : undefined,
       params,
     };
   }
@@ -714,7 +732,7 @@ export class BaseModel {
     const whereClauses = this.buildWhereClauses();
 
     // Combine WHERE clauses if any exist
-    if (whereClauses) {
+    if (whereClauses.sql) {
       sql += ` WHERE ${whereClauses.sql}`;
       values.push(...whereClauses.params);
     }
@@ -842,8 +860,9 @@ export class BaseModel {
   /**
    * RELATIONSHIPS
    */
-  static hasOne(model: typeof BaseModel, foreignKey?: string, localKey?: string): void {
-    this.relations[model.name] = {
+  static hasOne({ model, foreignKey, localKey, as }: { model: typeof BaseModel; foreignKey?: string; localKey?: string; as?: string }): void {
+    const relationName = as || model.name;
+    this.relations[relationName] = {
       type: RelationType.HAS_ONE,
       model,
       foreignKey,
@@ -851,8 +870,9 @@ export class BaseModel {
     };
   }
 
-  static hasMany(model: typeof BaseModel, foreignKey?: string, localKey?: string): void {
-    this.relations[model.name] = {
+  static hasMany({ model, foreignKey, localKey, as }: { model: typeof BaseModel; foreignKey?: string; localKey?: string; as?: string }): void {
+    const relationName = as || model.name;
+    this.relations[relationName] = {
       type: RelationType.HAS_MANY,
       model,
       foreignKey,
@@ -860,8 +880,9 @@ export class BaseModel {
     };
   }
 
-  static belongsTo(model: typeof BaseModel, foreignKey?: string, ownerKey?: string): void {
-    this.relations[model.name] = {
+  static belongsTo({ model, foreignKey, ownerKey, as }: { model: typeof BaseModel; foreignKey?: string; ownerKey?: string; as?: string }): void {
+    const relationName = as || model.name;
+    this.relations[relationName] = {
       type: RelationType.BELONGS_TO,
       model,
       foreignKey,
@@ -869,8 +890,21 @@ export class BaseModel {
     };
   }
 
-  static belongsToMany(model: typeof BaseModel, pivotTable: string, foreignKey?: string, relatedKey?: string): void {
-    this.relations[model.name] = {
+  static belongsToMany({
+    model,
+    foreignKey,
+    pivotTable,
+    relatedKey,
+    as,
+  }: {
+    model: typeof BaseModel;
+    pivotTable: string;
+    foreignKey?: string;
+    relatedKey?: string;
+    as?: string;
+  }): void {
+    const relationName = as || model.name;
+    this.relations[relationName] = {
       type: RelationType.BELONGS_TO_MANY,
       model,
       pivotTable,
@@ -1065,8 +1099,23 @@ export class BaseModel {
   protected async afterDelete(): Promise<void> {
     // To be implemented by child classes
   }
+  async update(data: Record<string, any>): Promise<boolean>;
+  async update(id: string | number | Array<string | number>, data: Record<string, any>, column?: string | null): Promise<boolean>;
+  async update(arg1: any, arg2?: any, arg3?: any): Promise<boolean> {
+    let data: Record<string, any>;
+    let id: string | number | Array<string | number> | null = null;
+    let column: string | null = null;
 
-  async update(id: number | string, data: Record<string, any>, column: string | null = null): Promise<boolean> {
+    if (typeof arg1 === "object" && !Array.isArray(arg1)) {
+      // update(data)
+      data = arg1;
+    } else {
+      // update(id, data [, column])
+      id = arg1;
+      data = arg2;
+      column = arg3 || null;
+    }
+
     await this.validate(data, true);
     await this.beforeUpdate(data);
     await this.setTimestamps(data, true);
@@ -1077,28 +1126,105 @@ export class BaseModel {
     const setClause = Object.keys(filteredData)
       .map((field) => `${field} = ?`)
       .join(", ");
-    const sql = `UPDATE ${this.table} SET ${setClause} WHERE ${keyColumn} = ?`;
 
-    const values = [...Object.values(filteredData), id];
-    const result = await this.executeUpdate(sql, values);
+    const values: any[] = Object.values(filteredData);
+
+    let whereParts: string[] = [];
+    let whereValues: any[] = [];
+
+    if (id !== null) {
+      if (Array.isArray(id)) {
+        if (id.length === 0) {
+          throw new Error("Empty array of IDs provided");
+        }
+        const placeholders = id.map(() => "?").join(", ");
+        whereParts.push(`${keyColumn} IN (${placeholders})`);
+        whereValues.push(...id);
+      } else {
+        whereParts.push(`${keyColumn} = ?`);
+        whereValues.push(id);
+      }
+    }
+
+    const queryBuilderWhere = this.buildWhereClauses();
+    if (queryBuilderWhere.sql) {
+      whereParts.push(queryBuilderWhere.sql);
+      whereValues.push(...queryBuilderWhere.params);
+    }
+
+    if (whereParts.length === 0) {
+      throw new Error("No WHERE condition provided for update. Refusing to update the entire table.");
+    }
+
+    const whereClause = `WHERE ${whereParts.join(" AND ")}`;
+
+    const sql = `UPDATE ${this.table} SET ${setClause} ${whereClause}`;
+
+    const result = await this.executeUpdate(sql, [...values, ...whereValues]);
 
     await this.afterUpdate(filteredData);
+
     return result > 0;
   }
 
-  async delete(id: number | string, column: string | null = null): Promise<boolean> {
+  async delete(): Promise<boolean>;
+  async delete(id: string | number | Array<string | number>, column?: string | null): Promise<boolean>;
+  async delete(arg1?: any, arg2?: any): Promise<boolean> {
     await this.beforeDelete();
 
+    let id: string | number | Array<string | number> | null = null;
+    let column: string | null = null;
+
+    if (arg1 === undefined) {
+      // delete() with builder
+      id = null;
+    } else {
+      // delete(id [, column])
+      id = arg1;
+      column = arg2 || null;
+    }
+
     const keyColumn = column || this.primaryKey;
-    if (!this.allowedFields.includes(keyColumn)) {
+
+    if (id !== null && !this.allowedFields.includes(keyColumn)) {
       throw new Error(`Column ${keyColumn} is not allowed for deletion.`);
     }
 
-    const sql = `DELETE FROM ${this.table} WHERE ${keyColumn} = ?`;
-    const [result] = await this.executeQuery(sql, [id]);
+    let whereParts: string[] = [];
+    let whereValues: any[] = [];
+
+    if (id !== null) {
+      if (Array.isArray(id)) {
+        if (id.length === 0) {
+          throw new Error("Empty array of IDs provided");
+        }
+        const placeholders = id.map(() => "?").join(", ");
+        whereParts.push(`${keyColumn} IN (${placeholders})`);
+        whereValues.push(...id);
+      } else {
+        whereParts.push(`${keyColumn} = ?`);
+        whereValues.push(id);
+      }
+    }
+
+    const queryBuilderWhere = this.buildWhereClauses();
+    if (queryBuilderWhere.sql) {
+      whereParts.push(queryBuilderWhere.sql);
+      whereValues.push(...queryBuilderWhere.params);
+    }
+
+    if (whereParts.length === 0) {
+      throw new Error("No WHERE condition provided for delete. Refusing to delete the entire table.");
+    }
+
+    const whereClause = `WHERE ${whereParts.join(" AND ")}`;
+
+    const sql = `DELETE FROM ${this.table} ${whereClause}`;
+
+    await this.executeQuery(sql, whereValues);
 
     await this.afterDelete();
-    return result.affectedRows > 0;
+    return true;
   }
 
   protected filterAllowedFields(data: Record<string, any>): Record<string, any> {
